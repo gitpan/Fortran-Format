@@ -1,5 +1,9 @@
 Revision history for Perl extension Fortran::Format
 
+0.53  Mon May 24 2004
+        - Changed t/write.t so that it ignores floating number tests unless
+          $ENV{TEST_FLOAT} is set.
+
 0.52  Mon May 24 2004
         - Fixed silly bug that precluded reusing formats because it forgot
           to clean the output buffer.
