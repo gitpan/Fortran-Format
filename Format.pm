@@ -3,7 +3,7 @@ package Fortran::Format;
 use strict;
 use warnings;
 
-our $VERSION = '0.51';
+our $VERSION = '0.52';
 #use Data::Dumper;
 our $DEBUG = 0;
 use Carp;
@@ -385,6 +385,7 @@ sub begin {
     $self->plus('');
     $self->scale(0);
     $self->reuse(0);
+    $self->{output} = '';
     $self->begin_line;
 }
 
