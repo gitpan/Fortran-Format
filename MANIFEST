@@ -1,0 +1,8 @@
+Format.pm
+MANIFEST			This list of files
+Makefile.PL
+README
+format.f
+t/pod.t
+t/write.t
+write_tests.txt
