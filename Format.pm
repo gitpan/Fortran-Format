@@ -3,9 +3,10 @@ package Fortran::Format;
 use strict;
 use warnings;
 
-our $VERSION = '0.50';
+our $VERSION = '0.51';
 #use Data::Dumper;
-my $DEBUG = 0;
+our $DEBUG = 0;
+use Carp;
 
 # Implemented:  lists, I, F, A, L, '', S, T, /, :
 # Not implemented yet: B (input only)
@@ -176,10 +177,10 @@ is decreased by I<k> orders of magnitude. With 1P the output would be 1.23E+00.
 
 =cut
 
-=item my $format = Fortran::Format->new($format_string);
+=item C<< my $format = Fortran::Format->new($format_string); >>
 
 Create a new format object. The string is parsed and compiled when the
-object is constructed. Dies if there was a syntax error.
+object is constructed. Croaks if there is a syntax error.
 
 =cut
 
@@ -192,11 +193,18 @@ sub new {
         format => shift, 
         writer => Fortran::Format::Writer->new,
     }, $class;
-    $self->parse;
+    eval {
+        $self->parse;
+    };
+    if ($@) {
+        chomp $@;
+        croak "Fortran::Format parse error: $@; pos=$self->{current_pos}\n",
+            "$self->{format}\n", " " x $self->{current_pos}, "^\ncalled";
+    }
     $self;
 }
 
-=item my $format_string = $format->format()
+=item C<< my $format_string = $format->format() >>
 
 Returns the format string used by the object.
 
@@ -222,17 +230,20 @@ sub parse {
     my $toks = $self->tokenize;
     print "$s\n" if $DEBUG;
 
-    my $tree = Fortran::Format::List->build($self, 
+    my $tree = Fortran::Format::RootList->build($self, 
         repeat => 1, writer => $self->writer);
-    #print Dumper $tree if $DEBUG;
     $self->{tree} = $tree;
+    #print Dumper $tree if $DEBUG;
 }
 
-=item my $output = $format->write(@data)
+=item C<< my $output = $format->write(@data) >>
 
 Formats the data. This is equivalent to the Fortran WRITE statement,
 except that it just returns the formatted string. It does not write 
-directly to a file.
+directly to a file. Data items may be either scalar or array references 
+(which can be nested).
+for example, C<< $format->write(1,[2,3],[4,[5,6[7]],8],9) >> 
+is exactly the same as C<< $format->write(1,2,3,4,5,6,7,8,9) >>.
 
 =cut
 
@@ -243,11 +254,31 @@ sub write {
     my $output;
     my $writer = $self->writer;
     $writer->begin;
+    @data = flatten(@data);
     while (@data) {
-        $self->{tree}->run(\@data);
+        my $data_count = @data;
+        $self->{tree}->write(\@data);
         $writer->end_line;
+        if (@data and @data == $data_count) { # make sure some data was used
+            croak "infinite format scan for edit descriptor";
+        }
     }
     $writer->output;
+}
+
+# takes a list and "flattens" it by turning array references into list items
+# example: flatten(1,[2,3],[4,[5,6[7]],8],9) returns (1,2,3,4,5,6,7,8,9)
+sub flatten {
+    my (@in) = @_;
+    my @out;
+    for my $item (@in) {
+        if (ref $item eq 'ARRAY') {
+            push @out, flatten(@$item);
+        } else {
+            push @out, $item;
+        }
+    }
+    @out;
 }
 
 # $format->tokenize()
@@ -261,32 +292,36 @@ sub tokenize {
     my $state = 0;
     my @toks;
     my ($tok, $len, $char);
-    while (defined ($char = shift @chars)) {
+    my $pos = 0;
+    my $tok_pos  = $self->{current_pos} = 0;
+    while (defined ($char = shift @chars) and ++$pos) {
         if ($state == 0) {
+            $tok_pos = $pos - 1;
             $tok = uc $char;
             $state = 1, next if $char eq "'";       # begin string
             $state = 3, next if $char =~ /\d/;      # number
             $state = 5, next if $char =~ /[+-]/;    # sign
             next if $char eq ' ';                   # skip space
             next if $char eq ',';                   # skip comma
-            push @toks, $tok;
+            push @toks, {tok => $tok, pos => $tok_pos};
         } elsif ($state == 1) {
             $tok .= $char;                          # string contents
             $state = 2, next if $char eq "'";       # quote
         } elsif ($state == 2) {
             $state = 1, next if $char eq "'";       # escaped quote
-            push @toks, $tok;
+            push @toks, {tok => $tok, pos => $tok_pos};
             $state = 0, redo;                       # end of string
         } elsif ($state == 3) {
             $len = $tok, $state = 4, $tok = '', 
                 next if uc $char eq 'H';            # begin H-string
             $tok .= $char, next if $char =~ /\d/;   # more digits
             next if $char eq ' ';                   # skip space
-            push @toks, $tok;
+            push @toks, {tok => $tok, pos => $tok_pos};
             $state = 0, redo;                       # end of number
         } elsif ($state == 4) {
             if ($len-- == 0) {
-                push @toks, "'$tok'";               # end of H-string
+                push @toks, {tok => "'$tok'", 
+                    pos => $tok_pos};               # end of H-string
                 $state = 0;
                 redo;
             }
@@ -294,19 +329,20 @@ sub tokenize {
         } elsif ($state == 5) {
             $tok .= $char, next if $char =~ /\d/;   # more digits
             next if $char eq ' ';                   # skip space
-            push @toks, $tok;
+            push @toks, {tok => $tok, pos => $tok_pos};
             $state = 0, redo;                       # end of number
         }
     }
     if ($state == 2 or $state == 3 or $state == 5) {
-        push @toks, $tok;
+        push @toks, {tok => $tok, pos => $tok_pos};
     } elsif ($state == 1 or $state == 4) {
+        $self->{current_pos} = length $self->format;
         die "unfinished string\n"; 
     }
 
     @toks = map { 
-        if    ($_ eq '/') { $_ = "SLASH" }
-        elsif ($_ eq ':') { $_ = "COLON" }
+        if    ($_->{tok} eq '/') { $_->{tok} = "SLASH" }
+        elsif ($_->{tok} eq ':') { $_->{tok} = "COLON" }
         $_ 
     } @toks;
 
@@ -319,27 +355,21 @@ sub get_tok {
     my $tok;
     if (! defined $patt || defined $self->peek_tok($patt)) {
         $tok = shift @{$self->{toks}};
-        print "  <$tok>\n" if $DEBUG and defined $tok;
+        my $pos = $tok->{pos};
+        $self->{current_pos} = $pos if $pos;
+        $tok = $tok->{tok};
+        print "  <$tok:$pos>\n" if $DEBUG and defined $tok;
         $self->{current_tok} = $tok;
     }
     $tok;
 }
 
-sub current_tok {
-    my $self = shift;
-    $self->{current_tok};
-}
+sub current_tok { $_[0]->{current_tok} }
 
 sub peek_tok {
     my ($self, $patt) = @_;
-    my $tok = $self->{toks}[0];
+    my $tok = $self->{toks}[0]{tok};
     defined $tok && $tok =~ /$patt/ ? $tok : undef;
-}
-
-sub unget_tok {
-    my ($self, $tok) = @_;
-    unshift @{$self->{toks}}, $tok;
-    #print "  «$tok»\n" if $DEBUG and defined $tok;
 }
 
 package Fortran::Format::Writer;
@@ -354,6 +384,7 @@ sub begin {
     my ($self) = @_;
     $self->plus('');
     $self->scale(0);
+    $self->reuse(0);
     $self->begin_line;
 }
 
@@ -400,20 +431,17 @@ sub position {
 
 sub plus {
     my $self = shift;
-    if (@_) {
-        $self->{plus} = shift;
-    } else {
-        $self->{plus};
-    }
+    if (@_) { $self->{plus} = shift } else { $self->{plus} }
 }
 
 sub scale {
     my $self = shift;
-    if (@_) {
-        $self->{scale} = shift;
-    } else {
-        $self->{scale};
-    }
+    if (@_) { $self->{scale} = shift } else { $self->{scale} }
+}
+
+sub reuse {
+    my $self = shift;
+    if (@_) { $self->{reuse} = shift } else { $self->{reuse} }
 }
 
 package Fortran::Format::Node;
@@ -422,7 +450,7 @@ sub build {
     my $class = shift;
     my $tokenizer = shift;
     $class = ref $class || $class;
-    my $self = bless { @_ }, $class;
+    my $self = bless { repeat => 1, @_ }, $class;
     $self->parse($tokenizer);
     $self;
 }
@@ -436,6 +464,17 @@ sub new {
 sub writer {
     my $self = shift;
     $self->{writer};
+}
+
+sub write {
+    my ($self, $data) = @_;
+    for (1 .. $self->{repeat}) {
+        my $ret = $self->write_once($data);
+        return undef unless defined $ret; # ran out of data ?
+        if (length $ret) {
+            $self->writer->write($ret);
+        }
+    }
 }
 
 sub parse {} # do nothing
@@ -452,7 +491,7 @@ sub parse {
     $self->{quoted_string} = $s;
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return $self->{quoted_string};
 }
@@ -463,18 +502,15 @@ our @ISA = "Fortran::Format::Node";
 
 sub parse {
     my ($self, $tokenizer) = @_;
-    my $tok = $tokenizer->get_tok;
-    $tok && $tok =~ /^\d+$/ or die "expected \\d after I\n";
+    my $tok = $tokenizer->get_tok('^\d+$') or die "expected \\d after I\n";
     $self->{width} = $tok;
-    if ($tokenizer->peek_tok('\.')) {
-        $tokenizer->get_tok;
-        $tok = $tokenizer->get_tok;
-        $tok && $tok =~ /^\d+$/ or die "expected \\d after I\\d.\n";
+    if ($tokenizer->get_tok('\.')) {
+        $tok = $tokenizer->get_tok('^\d+$') or die "expected \\d after I\\d.\n";
         $self->{min} = $tok;
     }
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $i = int(shift @$data); 
@@ -510,7 +546,7 @@ sub parse {
     $self->{precision} = $tok;
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $f = shift @$data; 
@@ -549,7 +585,7 @@ sub parse {
     $self->{precision} = $tok;
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $s;  # working string
@@ -639,7 +675,7 @@ package Fortran::Format::Edit::G;
 
 our @ISA = "Fortran::Format::Edit::E";
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $s;  # working string
@@ -658,13 +694,13 @@ sub run {
     
     if ($exp < -1 or $exp >= $precision) {
         # format as E
-        $s = $self->SUPER::run($data);
+        $s = $self->SUPER::write_once($data);
     } else {
         my $right_margin = $exp_width ? $exp_width + 2 : 4;
 
         $self->{width} -= $right_margin;
         $self->{precision} = $precision - $exp - 1;
-        $s  = $self->Fortran::Format::Edit::F::run($data);
+        $s  = $self->Fortran::Format::Edit::F::write_once($data);
         $s .= " " x $right_margin;
         $self->{precision} = $precision;
         $self->{width} = $width;
@@ -682,7 +718,7 @@ sub parse {
         or die "expected \\d after F\n";
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $l = shift @$data; 
@@ -694,7 +730,7 @@ package Fortran::Format::Edit::X;
 
 our @ISA = "Fortran::Format::Node";
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     $self->writer->position( relative => 1 );
     "";
@@ -704,7 +740,7 @@ package Fortran::Format::Edit::SLASH;
 
 our @ISA = "Fortran::Format::Node";
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     $self->writer->end_line;
     "";
@@ -714,7 +750,7 @@ package Fortran::Format::Edit::COLON;
 
 our @ISA = "Fortran::Format::Node";
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     "";
@@ -730,7 +766,7 @@ sub parse {
     $self->{width} = $tokenizer->get_tok('^\d+$');
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $datum = shift @$data; 
@@ -759,7 +795,7 @@ sub parse {
     }
 }
 
-sub run {
+sub write_once {
     my ($self) = @_;
     $self->writer->plus($self->{plus});
     '';
@@ -769,7 +805,7 @@ package Fortran::Format::Edit::P;
 
 our @ISA = "Fortran::Format::Node";
 
-sub run {
+sub write_once {
     my ($self) = @_;
     $self->writer->scale($self->{scale});
     '';
@@ -796,7 +832,7 @@ sub parse {
     }
 }
 
-sub run {
+sub write_once {
     my ($self) = @_;
     if ($self->{position}) { # absolute position (T)
         $self->writer->position( absolute => $self->{position} - 1 ); # Fortran is 1-based
@@ -826,7 +862,7 @@ sub parse {
             # should check that next token is repeatable and $tok > 0
             if ($tokenizer->get_tok('P')) {  # scale factor
                 push @$nodes, Fortran::Format::Edit::P->build($tokenizer,
-                    writer => $self->{writer}, scale => $tok );
+                    writer => $self->writer, scale => $tok );
             } elsif ($tokenizer->peek_tok('^[IFEDGLAX(]$')) {
                 if ($tok =~ /^[+-]/ or $tok == 0) {
                     die "repeat count should be unsigned and non-zero\n";
@@ -834,53 +870,73 @@ sub parse {
                     $repeat = $tok;
                 }
             } else {
-                die "digit not preceding repeatable token\n";
+                die "number not followed by repeatable token\n";
             }
         } elsif ($tok eq '(') {
-            push @$nodes, Fortran::Format::List->build($tokenizer, 
-                repeat => $repeat, writer => $self->{writer});
+            push @$nodes, $self->{last_list} = Fortran::Format::List->build(
+                $tokenizer, 
+                repeat => $repeat, 
+                writer => $self->writer
+            );
         } elsif ($tok eq ')') {
-            return;
+            return; # end of list
         } elsif ($tok =~ /^'/) {
-            push @$nodes, Fortran::Format::Edit::Quote->build($tokenizer)
+            push @$nodes, Fortran::Format::Edit::Quote->build($tokenizer,
+                writer => $self->writer);
         } elsif ($tok =~ /^[IFEDGLAX]$/i) { # repeatable tokens
             # NOTE: X is technically not a repeatable token; the
             # "repeat" count is suposedly mandatory, but at least g77, ifc, 
             # and pgf77 don't really care (and neither do most programmers)
-            push @$nodes, Fortran::Format::List->new(
+            push @$nodes, "Fortran::Format::Edit::$tok"->build(
+                $tokenizer,
+                writer => $self->writer,
                 repeat => $repeat, 
-                nodes => [
-                    "Fortran::Format::Edit::$tok"->build($tokenizer,
-                        writer => $self->{writer})
-                ],
-                writer => $self->{writer},
             );
             $repeat = 1;
         } elsif ($tok =~ /^([ST]|SLASH|COLON)$/) { # non-repeatable tokens
-            push @$nodes, "Fortran::Format::Edit::$tok"->build($tokenizer,
-                writer => $self->{writer});
+            push @$nodes, "Fortran::Format::Edit::$tok"->build(
+                $tokenizer,
+                writer => $self->writer
+            );
         } else {
             die "invalid or unimplemented token: $tok\n";
         }
     }
 }
 
-sub run {
+sub write_once {
     my ($self, $data) = @_;
 
-    for (1 .. $self->{repeat}) {
-        for my $node ($self->nodes) {
-            my $ret = $node->run($data);
-            return undef unless defined $ret; # ran out of data ?
-            if (length $ret) {
-                $self->{writer}->write($ret);
-            }
+    for my $node ($self->nodes) {
+        my $ret = $node->write($data);
+        return undef unless defined $ret; # ran out of data ?
+        if (length $ret) {
+            $self->{writer}->write($ret);
         }
     }
     ''; # this function does not produce new text
 }
 
+package Fortran::Format::RootList;
+
+our @ISA = "Fortran::Format::List";
+
+sub write {
+    my ($self, $data) = @_;
+
+    if ($self->writer->reuse() and $self->{last_list}) {
+        $self->{last_list}->write($data);
+    } else {
+        $self->SUPER::write($data);
+    }
+    $self->writer->reuse(1);
+    ''; # this function does not produce new text
+}
+
+
+
 1;
+
 
 =back
 

@@ -1,0 +1,16 @@
+Revision history for Perl extension Fortran::Format
+
+0.51  Fri Apr 23 2004
+        - Fixed bug where the complete format would be reused in 
+        subsequent lines, instead of using only the last list, as
+        dictated by the standard.
+        - Fixed a related bug where there was an infinite loop when there
+        were no edit descriptors to consume all the data.
+        - Changed exception handling to croak and return a more meaningful 
+        error message when there's a parsing error.
+        - Now $format->write accepts array references and flattens them
+        automatically.
+
+0.50  Thu Apr 22 2004
+	- First CPAN release
+

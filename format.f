@@ -57,12 +57,16 @@ C WHICH GIVES '.' IN G77 AND '*' IN IFC
       IFORMS(31)='(I4,8HH-STRING,I4)'
       IFORMS(32)='(I4,8HH-STRINGI4)'
       IFORMS(33)='(I4,10HH-STRING''SI4)'
+      IFORMS(34)='(I9, 2(I6))'
+      IFORMS(35)='(I9, 2(I6, 3(I4)))'
+      IFORMS(36)='(I9, 2(I6), 2(''HELLO''))'
 
-      DO 10 I=1,33
+      DO 10 I=1,36
          WRITE (*, '(''IFORMAT''A)') IFORMS(I)
          WRITE (*, IFORMS(I)) IARR
          WRITE (*, '()')
  10   CONTINUE
+      STOP
 
       DFORMS( 1)='(F16.4)'
       DFORMS( 2)='(F8.2)'
