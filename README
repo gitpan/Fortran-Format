@@ -1,4 +1,4 @@
-Fortran::Format version 0.53
+Fortran::Format version 0.54
 ============================
 
 This is a Perl implementation of the Fortran 77 formatted output facility
@@ -18,9 +18,8 @@ in mind. It implements the full ANSI standard for Fortran 77 Formats (or at
 least it should). It was not written with speed in mind, so if you need to
 process millions of records it may not be what you need.
 
-CHANGES SINCE VERSON 0.52
-        - Changed t/write.t so that it ignores floating number tests unless
-          $ENV{TEST_FLOAT} is set.
+CHANGES SINCE VERSON 0.53
+        - Fixed bug where 2(I8),I2 would be interpreted as 2(I8),2I2.
 
 INSTALLATION
 

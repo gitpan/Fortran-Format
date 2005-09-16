@@ -341,6 +341,18 @@ IFORMAT(I4TR2I4)
   -2    -1
    0
 
+IFORMAT(2(I8),I2)                               
+       1       2 3
+       4       5
+       6       7
+       8       9
+      10     -10
+      -9      -8
+      -7      -6
+      -5      -4
+      -3      -2
+      -1       0
+
 IFORMAT('ODD 'I4/'EVEN'I4)                     
 ODD    1
 EVEN   2

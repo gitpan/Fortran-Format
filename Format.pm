@@ -3,7 +3,7 @@ package Fortran::Format;
 use strict;
 use warnings;
 
-our $VERSION = '0.53';
+our $VERSION = '0.54';
 #use Data::Dumper;
 our $DEBUG = 0;
 use Carp;
@@ -879,6 +879,7 @@ sub parse {
                 repeat => $repeat, 
                 writer => $self->writer
             );
+            $repeat = 1;
         } elsif ($tok eq ')') {
             return; # end of list
         } elsif ($tok =~ /^'/) {
@@ -943,7 +944,7 @@ sub write {
 
 =head1 VERSION
 
-0.53
+0.54
 
 =head1 SEE ALSO
 
