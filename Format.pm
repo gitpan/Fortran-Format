@@ -3,18 +3,14 @@ package Fortran::Format;
 use strict;
 use warnings;
 
-our $VERSION = '0.54';
-#use Data::Dumper;
+our $VERSION = '0.90';
+use Data::Dumper;
 our $DEBUG = 0;
 use Carp;
 
-# Implemented:  lists, I, F, A, L, '', S, T, /, :
-# Not implemented yet: B (input only)
-# Can write but not read
-
 =head1 NAME
 
-Fortran::Format - Write data according to a standard Fortran 77 FORMAT 
+Fortran::Format - Read and write data according to a standard Fortran 77 FORMAT 
 
 =head1 SYNOPSYS
 
@@ -35,14 +31,14 @@ Fortran::Format - Write data according to a standard Fortran 77 FORMAT
 
 =head1 DESCRIPTION
 
-This is a Perl implementation of the Fortran 77 formatted output facility
-(input will be available in a future version). One possible use is for
-producing input files for old Fortran programs, making sure that their
-column-oriented records are rigorously correct. Fortran formats may also have
-some advantages over printf in some cases: it is very easy to output an array,
-reusing the format as needed; and the syntax for repeated columns is more
-concise. Unlike printf, for good or ill, Fortran-formatted fields B<never>
-exceed their desired width. For example, compare
+This is a Perl implementation of the Fortran 77 formatted input/output
+facility.  One possible use is for producing input files for old Fortran
+programs, making sure that their column-oriented records are rigorously
+correct. Fortran formats may also have some advantages over C<printf> in some
+cases: it is very easy to output an array, reusing the format as needed; and
+the syntax for repeated columns is more concise. Unlike C<printf>, for good or
+ill, Fortran-formatted fields B<never> exceed their desired width. For
+example, compare
 
     printf "%3d", 12345;                            # prints "12345"
     print Fortran::Format->new("I3")->write(12345); # prints "***"
@@ -177,7 +173,9 @@ is decreased by I<k> orders of magnitude. With 1P the output would be 1.23E+00.
 
 =cut
 
-=item C<< my $format = Fortran::Format->new($format_string); >>
+=item new
+
+    my $format = Fortran::Format->new($format_string);
 
 Create a new format object. The string is parsed and compiled when the
 object is constructed. Croaks if there is a syntax error.
@@ -204,7 +202,9 @@ sub new {
     $self;
 }
 
-=item C<< my $format_string = $format->format() >>
+=item format
+
+    my $format_string = $format->format;
 
 Returns the format string used by the object.
 
@@ -233,17 +233,47 @@ sub parse {
     my $tree = Fortran::Format::RootList->build($self, 
         repeat => 1, writer => $self->writer);
     $self->{tree} = $tree;
-    #print Dumper $tree if $DEBUG;
+    print Dumper $tree if $DEBUG;
 }
 
-=item C<< my $output = $format->write(@data) >>
+=item write
 
-Formats the data. This is equivalent to the Fortran WRITE statement,
+    $output = $format->write(@data);
+
+Formats the data. This is equivalent to the Fortran C<WRITE> statement,
 except that it just returns the formatted string. It does not write 
 directly to a file. Data items may be either scalar or array references 
 (which can be nested).
-for example, C<< $format->write(1,[2,3],[4,[5,6[7]],8],9) >> 
-is exactly the same as C<< $format->write(1,2,3,4,5,6,7,8,9) >>.
+
+For matrices (multidimensional arrays), the contents are formatted in
+column-major order, same as in Fortran. For example,
+
+    my $a = [[1,2],[3,4]];
+    Fortran::Format->new('4I4')->write($a);
+
+will print
+
+    1   3   2   4
+
+or 
+
+    Fortran::Format->new('2I4')->write($a);
+
+will print
+
+    1   3
+    2   4
+    
+This is effectively equivalent to transposing the matrix before
+printing it in the row-major order that would be expected by
+most non-Fortran programmers. This kludge is necessary 
+to ensure that the output can be read properly by a Fortran 
+program.
+
+B<Note>: this is incompatible with Fortran::Format 0.5x, which
+simply flattened the nested arrays, producing the output in row-major
+order. Also note that the behavior is undefined if the nested array
+is not rectangular. For example, [[1],[2,3]] will give strange results.
 
 =cut
 
@@ -254,13 +284,13 @@ sub write {
     my $output;
     my $writer = $self->writer;
     $writer->begin;
-    @data = flatten(@data);
+    @data = _flatten(@data);
     while (@data) {
         my $data_count = @data;
         $self->{tree}->write(\@data);
         $writer->end_line;
         if (@data and @data == $data_count) { # make sure some data was used
-            croak "infinite format scan for edit descriptor";
+            croak "infinite format scan for edit descriptor on writing";
         }
     }
     $writer->output;
@@ -268,18 +298,146 @@ sub write {
 
 # takes a list and "flattens" it by turning array references into list items
 # example: flatten(1,[2,3],[4,[5,6[7]],8],9) returns (1,2,3,4,5,6,7,8,9)
-sub flatten {
+sub _simple_flatten {
     my (@in) = @_;
     my @out;
     for my $item (@in) {
         if (ref $item eq 'ARRAY') {
-            push @out, flatten(@$item);
+            push @out, _simple_flatten(@$item);
         } else {
             push @out, $item;
         }
     }
     @out;
 }
+
+sub _flatten {
+    my (@in) = @_;
+    my @out;
+    for my $item (@in) {
+        if (ref $item eq 'ARRAY') {
+            push @out, _colum_flatten($item);
+        } else {
+            push @out, $item;
+        }
+    }
+    @out;
+}
+
+sub _transpose {
+    my ($data, $offs, $size, @dims) = @_;
+    unless (@dims) { return $data->[$offs] }
+    my $n = pop @dims;
+    my @ret;
+    for my $i (0 .. $n-1) {
+        push @ret, _transpose($data, $offs + $i*$size, $size*$n, @dims);
+    }
+    @ret;
+}
+
+sub _colum_flatten {
+    my ($in) = @_;
+    my @temp = _simple_flatten(@$in);
+    my @dims;
+    for (my $p = $in; ref $p; $p = $p->[0]) {
+        push @dims, scalar @$p;
+    }
+    _transpose(\@temp, 0, 1, @dims);
+}
+
+=item read
+
+    my (@results) = $format->read($fh, @input_list);
+
+Read data from the filehandle $fh using the format ($fh can also be a string
+instead of a filehandle). The input list is a list of array sizes: 1 for 
+simple scalars, I<n> for simple arrays, and an array reference of dimensions
+(such as [3,3]) for multidimensional arrays. For example,
+
+    my ($i, $matrix, $j) = $format->read($fh, 1, [3,3], 2) 
+
+will read one scalar, followed by a 3x3 matrix, followed by an array with size
+two. B<Note>: this method should be called in list context!
+
+The input list is needed because Fortran formats are reused automatically for
+subsequent lines until all the variables are read.
+
+Matrices are read in column-major order. See C<write> for details.
+
+When reading, it is also possible to specify the length of the
+resulting string variables by appending
+"AI<length>". For example,
+
+    my $s = $format->read($fh, '1A40')
+
+will read the data I<into> a 40-character long string variable (this is
+regardless of the field width specified in the format string itself). The
+string will be padded with trailing spaces if needed to ensure that it is
+exactly 40 characters long. This attempts to emulate Fortran's peculiar string
+length semantics. It is needed if you want to read a string, write it back,
+and be sure that you get the exact same output that you would get with 
+Fortran.
+
+For example,
+    
+    my $in = 'hello world';
+    my $a5  = Fortran::Format->new('A5');
+    my $a20 = Fortran::Format->new('A20');
+
+    my ($s) = $a5->read($in, '1A10');
+
+    print $a20->write($s);
+    # prints "          hello     "
+
+Notice that 1) C<$s> was padded with five space, to a length of ten
+characters; 2) the output is right-justified to a total width of 20
+characters.
+
+Now, if we do this instead: 
+
+    my ($s) = $a5->read($in, '1A3');
+    print $a20->write($s);
+    # prints "                 llo"
+
+Five character are read from the left of the string ("hello"), but only the 
+rightmost three are copied to the 3-character-long variable ("llo").
+
+=cut
+
+# possible way of specifying string length:
+# my ($i, $matrix, $j) = $format->read($fh, 'A40' [3,A40], 1) 
+# my ($i, $matrix, $j) = $format->read($fh, 'A40' '3A40', 1) 
+
+# READ INTERFACE
+# --> my ($i, $arr_ref, $j) = $format->read($fh, 1, [3,3], 1) 
+sub read {
+    my ($self, $input, @input_list) = @_;
+
+    unless (wantarray) {
+        croak "Fortran::Format->read should be called in list context";
+    }
+
+    $self->writer->begin(input_list => \@input_list);
+    my $fh;
+    if (ref $input) {
+        $fh = $input;
+    } else {
+        open $fh, '<', \$input;
+    }
+    while ($self->writer->want_more) {
+        $self->writer->begin_line;
+        my $line = <$fh>; 
+        chomp $line;
+        $self->{writer}{input_line} = $line; # XXX
+        $self->{tree}->read;  # read format once
+        unless ($self->writer->read_something) {
+            croak "infinite format scan for edit descriptor on reading";
+        }
+    }
+
+    $self->writer->input_data;
+}
+
 
 # $format->tokenize()
 # separate a string into tokens, which are stored internally by the object
@@ -346,7 +504,7 @@ sub tokenize {
         $_ 
     } @toks;
 
-    #print Dumper \@toks if $DEBUG;
+    print Dumper \@toks if $DEBUG;
     $self->{toks} = \@toks;
 }
 
@@ -372,7 +530,76 @@ sub peek_tok {
     defined $tok && $tok =~ /$patt/ ? $tok : undef;
 }
 
+package Fortran::Format::InputItem;
+
+sub new {
+    my ($class, %opts)  = @_;
+    $class = ref $class || $class;
+
+    my $dims = $opts{dimensions};
+    $dims = [$dims] unless ref $dims;
+
+    my $size = 1;
+    my @idims;
+    {no warnings; @idims = map { int } @$dims; }
+    $size *= $_ for (@idims);
+
+    my $last_dim = $dims->[-1];
+    my $string_length;
+    if ($last_dim =~ /^\d+A(\d+)$/) {
+        $string_length = $1;
+    }
+
+    my $self = bless { 
+        dimensions => \@idims, 
+        size => $size,
+        data => [],
+        string_length => $string_length,
+    }, $class;
+    $self;
+}
+
+sub push_data {
+    my ($self, $val) = @_;
+    if ($self->{string_length}) {
+        if (length $val > $self->{string_length}) {
+            $val = substr $val, length($val) - $self->{string_length}; 
+        } else {
+            $val = sprintf "%-$self->{string_length}s", $val;
+        }
+    }
+    push @{$self->{data}}, $val;
+}
+
+sub contents {
+    my ($self) = @_;
+    my $data = $self->{data};
+    return undef if @$data < $self->{size};
+    #use Data::Dumper; print "CONTENTS DATA:\n", Dumper $data;
+    my $ret;
+    if (@$data == 1) { # flatten scalars
+        $ret = $data->[0];
+    } else {
+        $ret = _fill_array($data, 0, 1, @{$self->{dimensions}});
+    }
+    #print "CONTENTS RET:\n", Dumper $ret;
+    $ret;
+}
+
+sub _fill_array {
+    my ($data, $offs, $size, @dims) = @_;
+    unless (@dims) { return $data->[$offs] }
+    my $n = shift @dims;
+    my @ret;
+    for my $i (0 .. $n-1) {
+        push @ret, _fill_array($data, $offs + $i*$size, $n*$size, @dims);
+    }
+    \@ret;
+}
+
 package Fortran::Format::Writer;
+
+our $DEBUG = 0;
 
 sub new {
     my $class = shift;
@@ -381,18 +608,28 @@ sub new {
 }
 
 sub begin {
-    my ($self) = @_;
+    my ($self, %pars) = @_;
     $self->plus('');
+    $self->bz(0);
     $self->scale(0);
     $self->reuse(0);
-    $self->{output} = '';
     $self->begin_line;
+    $self->{input_data} = [];
+    $self->{output}     = '';
+    if ($pars{input_list}) {
+        $self->{input_list} = [ map {
+            Fortran::Format::InputItem->new(dimensions => $_)
+        } @{$pars{input_list}} ];
+        # XXX
+    }
+    #use Data::Dumper; print Dumper $self;
 }
 
 sub begin_line {
     my ($self) = @_;
     $self->{position} = 0;
     $self->{current_line}   = '';
+    $self->{read_count} = 0;
 }
 
 sub end_line {
@@ -419,6 +656,49 @@ sub write {
     $self->{current_line} = $line;
 }
 
+sub read {
+    my ($self, $width) = @_;
+    my $s = $self->{input_line};    
+    no warnings;
+    $s = substr($s, $self->{position}, $width);
+    $s = sprintf "%-*s", $width, $s;
+    print "extracted '$s'\n" if $DEBUG;
+    $self->position(relative => $width);
+    $s;
+}
+
+sub put {
+    my ($self, $val) = @_;
+    my $input = $self->{input_list}[0];
+    print "putting '$val'\n" if $DEBUG;
+    $self->{read_count}++;
+    $input->push_data($val);
+    my $ret = $input->contents;
+    if (defined $ret) {
+        print "full\n" if $DEBUG;    
+        push @{$self->{input_data}}, $ret;
+        shift @{$self->{input_list}};
+    } else {
+        print "not full yet\n" if $DEBUG;    
+    }
+}
+
+sub input_data {
+    my ($self) = @_;
+    #use Data::Dumper; print "HI:\n", Dumper $self->{input_data};
+    @{$self->{input_data}};
+}
+
+sub want_more {
+    my ($self) = @_;
+    scalar @{$self->{input_list}};
+}
+
+sub read_something {
+    my ($self) = @_;
+    $self->{read_count};
+}
+
 sub position {
     my ($self, $relative, $n) = @_;
     use Carp; confess unless @_ == 3;
@@ -433,6 +713,11 @@ sub position {
 sub plus {
     my $self = shift;
     if (@_) { $self->{plus} = shift } else { $self->{plus} }
+}
+
+sub bz {
+    my $self = shift;
+    if (@_) { $self->{bz} = shift } else { $self->{bz} }
 }
 
 sub scale {
@@ -468,14 +753,23 @@ sub writer {
 }
 
 sub write {
-    my ($self, $data) = @_;
+    my ($self, $data, $start) = @_;
     for (1 .. $self->{repeat}) {
-        my $ret = $self->write_once($data);
+        my $ret = $self->write_once($data, $start);
         return undef unless defined $ret; # ran out of data ?
         if (length $ret) {
             $self->writer->write($ret);
         }
     }
+}
+
+sub read {
+    my ($self, $start) = @_;
+    for (1 .. $self->{repeat}) {
+        my $ret = $self->read_once($start);
+        return undef unless defined $ret; 
+    }
+    1;
 }
 
 sub parse {} # do nothing
@@ -506,7 +800,8 @@ sub parse {
     my $tok = $tokenizer->get_tok('^\d+$') or die "expected \\d after I\n";
     $self->{width} = $tok;
     if ($tokenizer->get_tok('\.')) {
-        $tok = $tokenizer->get_tok('^\d+$') or die "expected \\d after I\\d.\n";
+        $tok = $tokenizer->get_tok('^\d+$');
+        defined $tok or die "expected \\d after I\\d.\n";
         $self->{min} = $tok;
     }
 }
@@ -525,6 +820,9 @@ sub write_once {
     } else {
         $s = $self->writer->plus . $s;
     }
+    if (defined $self->{min} and $self->{min} == 0 and $s == 0) {
+        $s = ''; # zero with zero with must be output as blank
+    }
     $s = sprintf "%$self->{width}s", $s; # right-justify
     if (length $s > $self->{width}) { # too wide?
         $s = "*" x $self->{width};
@@ -532,6 +830,26 @@ sub write_once {
     $s;
 }
 
+sub read_once {
+    my ($self) = @_;
+    return undef unless $self->writer->want_more;
+    my $s = $self->writer->read($self->{width});
+    if ($s =~ /^ *-?[\d ]+$/) {
+        $s =~ s/^ +//;
+        if ($self->writer->bz) {
+            $s =~ s/ /0/g;
+        } else {
+            $s =~ s/ //g;
+        }
+        no warnings;
+        my $i = int($s);
+        #print "I parsed '$i'\n";
+        $self->writer->put($i);
+    } else {
+        die "invalid integer '$s'\n";
+    }
+    1;
+}
 
 package Fortran::Format::Edit::F;
 
@@ -541,7 +859,7 @@ sub parse {
     my ($self, $tokenizer) = @_;
     my $tok = $tokenizer->get_tok('^\d+$') or die "expected \\d after F\n";
     $self->{width} = $tok;
-    $tokenizer->get_tok('\.') or die "expected . after F\\d\n";
+    $tokenizer->get_tok('^\.$') or die "expected . after F\\d\n";
     $tok = $tokenizer->get_tok('^\d+$'); 
     defined $tok or die "expected \\d after F\\d.\n";
     $self->{precision} = $tok;
@@ -551,6 +869,7 @@ sub write_once {
     my ($self, $data) = @_;
     return undef unless @$data;
     my $f = shift @$data; 
+    $f *= 10 ** ($self->writer->scale);
     my $s = sprintf "%.$self->{precision}f", abs $f;
     if ($f < 0.0 and $s =~ /[1-9]/) { 
         # must only include negative sign for non-zero output
@@ -570,6 +889,35 @@ sub write_once {
     }
 
     $s;
+}
+
+sub read_once {
+    my ($self) = @_;
+    return undef unless $self->writer->want_more;
+    my $s = $self->writer->read($self->{width});
+    my $f;
+
+    if ($s =~ /^ *-?(?:[\d ]*\.?[\d ]*)$/ and $s =~ /\d/) {
+        $s =~ s/^ +//; # remove leading spaces
+        if ($self->writer->bz) {
+            $s =~ s/ /0/g;
+        } else {
+            $s =~ s/ //g;
+        }
+        unless ($s =~ /\./) {
+            substr $s, length($s) - $self->{precision}, 0, '.';
+        }
+        #no warnings;
+        $f = $s / 10**($self->writer->scale);
+        #print "F parsed '$i'\n";
+        #$self->writer->put($i);
+    } elsif ($s =~ /^[ .]*$/) {
+        $f = 0;
+    } else {
+        die "invalid F number'$s'\n";
+    }
+    $self->writer->put($f);
+    1;
 }
 
 package Fortran::Format::Edit::D;
@@ -663,7 +1011,7 @@ our @ISA = "Fortran::Format::Edit::D";
 sub parse {
     my ($self, $tokenizer) = @_;
     $self->SUPER::parse($tokenizer); # mostly similar to D
-    if ($tokenizer->get_tok('E')) {
+    if ($tokenizer->get_tok('^E$')) {
         $self->{exp_width} = $tokenizer->get_tok('^\d+$') 
             or die "expected \\d after E\\d.\\dE\n";
     }
@@ -726,6 +1074,22 @@ sub write_once {
     sprintf "%$self->{width}s", $l ? 'T' : 'F';
 }
 
+sub read_once {
+    my ($self) = @_;
+    return undef unless $self->writer->want_more;
+    my $s = $self->writer->read($self->{width});
+    my $b;
+
+    if ($s =~ /^ *\.?[tT]/) {
+        $b = 1;
+    } elsif ($s =~ /^ *\.?[fF]/) {
+        $b = 0;
+    } else {
+        die "invalid F format '$s'\n";
+    }
+    $self->writer->put($b);
+    1;
+}
 
 package Fortran::Format::Edit::X;
 
@@ -784,6 +1148,15 @@ sub write_once {
     $s;
 }
 
+sub read_once {
+    my ($self) = @_;
+    return undef unless $self->writer->want_more;
+    my $s = $self->writer->read($self->{width});
+    $self->writer->put($s);
+    1;
+}
+
+
 package Fortran::Format::Edit::S;
 
 our @ISA = "Fortran::Format::Node";
@@ -791,7 +1164,7 @@ our @ISA = "Fortran::Format::Node";
 sub parse {
     my ($self, $tokenizer) = @_;
     $self->{plus} = ''; # default is no plus
-    if (my $tok = $tokenizer->get_tok('[SP]')) {
+    if (my $tok = $tokenizer->get_tok('^[SP]$')) {
         $self->{plus} = '+' if $tok eq 'P';
     }
 }
@@ -800,6 +1173,23 @@ sub write_once {
     my ($self) = @_;
     $self->writer->plus($self->{plus});
     '';
+}
+
+package Fortran::Format::Edit::B;
+
+our @ISA = "Fortran::Format::Node";
+
+sub parse {
+    my ($self, $tokenizer) = @_;
+    my $tok = $tokenizer->get_tok('^[NZ]$')
+        or die "expected [NZ] after B\n";
+    $self->{bz} = $tok eq 'Z' ? 1 : 0;
+}
+
+sub read_once {
+    my ($self) = @_;
+    $self->writer->bz($self->{bz});
+    1;
 }
 
 package Fortran::Format::Edit::P;
@@ -812,17 +1202,21 @@ sub write_once {
     '';
 }
 
+sub read_once {
+    write_once(@_);
+}
+
 package Fortran::Format::Edit::T;
 
 our @ISA = "Fortran::Format::Node";
 
 sub parse {
     my ($self, $tokenizer) = @_;
-    if ($tokenizer->get_tok('R')) {
+    if ($tokenizer->get_tok('^R$')) {
         my $tok = $tokenizer->get_tok('^\d+$') 
             or die "expected \\d after TR\n";
         $self->{delta} = $tok;
-    } elsif ($tokenizer->get_tok('L')) {
+    } elsif ($tokenizer->get_tok('^L$')) {
         my $tok = $tokenizer->get_tok('^\d+$') 
             or die "expected \\d after TL\n";
         $self->{delta} = -$tok;
@@ -858,7 +1252,7 @@ sub parse {
     $self->{nodes} = my $nodes = [];
     my $repeat = 1;
 
-    while (my $tok = $tokenizer->get_tok) {
+    while (defined (my $tok = $tokenizer->get_tok)) {
         if ($tok =~ /^[+-]?\d+$/) {
             # should check that next token is repeatable and $tok > 0
             if ($tokenizer->get_tok('P')) {  # scale factor
@@ -895,7 +1289,7 @@ sub parse {
                 repeat => $repeat, 
             );
             $repeat = 1;
-        } elsif ($tok =~ /^([ST]|SLASH|COLON)$/) { # non-repeatable tokens
+        } elsif ($tok =~ /^([STB]|SLASH|COLON)$/) { # non-repeatable tokens
             push @$nodes, "Fortran::Format::Edit::$tok"->build(
                 $tokenizer,
                 writer => $self->writer
@@ -907,9 +1301,13 @@ sub parse {
 }
 
 sub write_once {
-    my ($self, $data) = @_;
+    my ($self, $data, $start) = @_;
 
+    my $started;
     for my $node ($self->nodes) {
+        next if $start and !$started and $node != $start;
+        $started = 1;
+
         my $ret = $node->write($data);
         return undef unless defined $ret; # ran out of data ?
         if (length $ret) {
@@ -919,21 +1317,47 @@ sub write_once {
     ''; # this function does not produce new text
 }
 
+sub read_once {
+    my ($self, $start) = @_;
+
+    my $started;
+    for my $node ($self->nodes) {
+        next if $start and !$started and $node != $start;
+        $started = 1;
+
+        my $ret = $node->read;
+        return undef unless defined $ret;
+    }
+    1;
+}
+
 package Fortran::Format::RootList;
 
 our @ISA = "Fortran::Format::List";
 
 sub write {
     my ($self, $data) = @_;
-
     if ($self->writer->reuse() and $self->{last_list}) {
-        $self->{last_list}->write($data);
+        $self->SUPER::write($data, $self->{last_list});
     } else {
         $self->SUPER::write($data);
     }
     $self->writer->reuse(1);
     ''; # this function does not produce new text
 }
+
+sub read {
+    my ($self) = @_;
+    if ($self->writer->reuse() and $self->{last_list}) {
+        $self->SUPER::read($self->{last_list});
+    } else {
+        $self->SUPER::read;
+    }
+    $self->writer->reuse(1);
+    ''; # this function does not produce new text
+}
+
+
 
 
 
@@ -944,7 +1368,7 @@ sub write {
 
 =head1 VERSION
 
-0.54
+0.90
 
 =head1 SEE ALSO
 
@@ -953,13 +1377,13 @@ L<http://www.fortran.com/fortran/F77_std/rjcnf0001-sh-13.html>
 
 =head1 AUTHOR
 
-Ivan Tubert E<lt>itub@cpan.orgE<gt>
+Ivan Tubert-Brohman E<lt>itub@cpan.orgE<gt>
 
 =head1 COPYRIGHT
 
-Copyright (c) 2004 Ivan Tubert. All rights reserved. This program is free
-software; you can redistribute it and/or modify it under the same terms as
-Perl itself.
+Copyright (c) 2005 Ivan Tubert-Brohman. All rights reserved. This program is
+free software; you can redistribute it and/or modify it under the same terms
+as Perl itself.
 
 =cut
 

@@ -51,22 +51,23 @@ C WHICH GIVES '.' IN G77 AND '*' IN IFC
       IFORMS(25)='(I4T2I4)'
       IFORMS(26)='(I4TL2I4)'
       IFORMS(27)='(I4TR2I4)'
-      IFORMS(28)='(''ODD ''I4/''EVEN''I4)'
-      IFORMS(29)='(''ODD ''I4,4X/''EVEN''I4)'
-      IFORMS(30)='(I4 :''  J OE'' I4)'
-      IFORMS(31)='(I4,8HH-STRING,I4)'
-      IFORMS(32)='(I4,8HH-STRINGI4)'
-      IFORMS(33)='(I4,10HH-STRING''SI4)'
-      IFORMS(34)='(I9, 2(I6))'
-      IFORMS(35)='(I9, 2(I6, 3(I4)))'
-      IFORMS(36)='(I9, 2(I6), 2(''HELLO''))'
+      IFORMS(28)='(2(I8),I2)'
+      IFORMS(29)='(''ODD ''I4/''EVEN''I4)'
+      IFORMS(30)='(''ODD ''I4,4X/''EVEN''I4)'
+      IFORMS(31)='(I4 :''  J OE'' I4)'
+      IFORMS(32)='(I4,8HH-STRING,I4)'
+      IFORMS(33)='(I4,8HH-STRINGI4)'
+      IFORMS(34)='(I4,10HH-STRING''SI4)'
+      IFORMS(35)='(I9, 2(I6))'
+      IFORMS(36)='(I9, 2(I6, 3(I4)))'
+      IFORMS(37)='(4I8.0)'
+C      IFORMS(36)='(I9, 2(I6), 2(''HELLO''))'
 
-      DO 10 I=1,36
+      DO 10 I=1,37
          WRITE (*, '(''IFORMAT''A)') IFORMS(I)
          WRITE (*, IFORMS(I)) IARR
          WRITE (*, '()')
  10   CONTINUE
-      STOP
 
       DFORMS( 1)='(F16.4)'
       DFORMS( 2)='(F8.2)'
@@ -99,7 +100,9 @@ C WHICH GIVES '.' IN G77 AND '*' IN IFC
       DFORMS(29)='(E18.4E10)'
       DFORMS(30)='(G18.3)'
       DFORMS(31)='(G18.3E4)'
-      DO 20 I=1,31
+      DFORMS(32)='(0PF16.4)'
+      DFORMS(33)='(-3PF16.4)'
+      DO 20 I=1,33
          WRITE (*, '(''DFORMAT''A)') DFORMS(I)
          WRITE (*, DFORMS(I)) DARR
          WRITE (*, '()')

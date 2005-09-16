@@ -1,7 +1,7 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Fortran-Format
-version:      0.54
+version:      0.90
 version_from: Format.pm
 installdirs:  site
 requires:
